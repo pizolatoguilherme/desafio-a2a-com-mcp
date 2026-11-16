@@ -1,34 +1,43 @@
 """Servidor MCP da Central de Salas, em Streamable HTTP stateless.
 
 Tres tools, um resource e o ciclo de MRTR na reserva. O MRTR nao e um callback:
-quando a sala pedida esta ocupada, o resolver `escolha_de_sala` devolve um
-`Elicit`, o SDK encerra a resposta com `resultType: input_required` e sela o
-`requestState` (AES-256-GCM com a chave de REQUEST_STATE_SECRET). No retry o
-SDK verifica o selo, reexecuta o resolver e entrega a resposta do cliente.
-Nada fica guardado aqui entre as duas rodadas.
+quando a sala pedida esta ocupada, `reservar_sala` devolve um InputRequiredResult
+com a elicitation e um requestState que carrega o pedido e as alternativas
+oferecidas. O RequestStateBoundary do SDK sela esse estado (AES-256-GCM com a
+chave de REQUEST_STATE_SECRET) e o verifica no retry. Nada fica guardado aqui
+entre as duas rodadas, entao o retry funciona mesmo depois de um restart.
 
 Rode com `python servidor-mcp/servidor.py`.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
-from typing import Annotated, Literal
 
 import uvicorn
-from pydantic import BaseModel, Field, create_model
+from mcp_types import (
+    INVALID_PARAMS,
+    MISSING_REQUIRED_CLIENT_CAPABILITY,
+    ElicitRequest,
+    ElicitRequestFormParams,
+    ElicitResult,
+    InputRequiredResult,
+)
+from pydantic import BaseModel
 
-from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.server.request_state import RequestStateSecurity
+from mcp.shared.exceptions import MCPError
 
 import dominio
 from log_requests import RegistroDeRequests
 
 NOME = "central-de-salas"
+CHAVE_DA_ESCOLHA = "escolha_de_sala"  # chave do inputRequests; o cliente devolve a mesma
+VERSAO_DO_ESTADO = 1
 VALIDADE_PADRAO_SEGUNDOS = 600  # 10 minutos
 VALIDADE_MINIMA_SEGUNDOS = 300  # o enunciado exige expiracao entre 5 e 30 minutos
 VALIDADE_MAXIMA_SEGUNDOS = 1800
@@ -109,21 +118,6 @@ class ReservaOut(BaseModel):
     motivo: str | None = None
 
 
-class SalaLivre(BaseModel):
-    """O que o resolver devolve quando nao ha conflito: a propria sala pedida."""
-
-    sala: str
-
-
-def _modelo_de_escolha(alternativas: list[str]) -> type[BaseModel]:
-    """Schema plano da elicitation: `sala` restrita as alternativas, na ordem calculada."""
-    opcoes = Literal.__getitem__(tuple(alternativas))
-    return create_model(
-        "EscolhaDeSala",
-        sala=(opcoes, Field(title="Sala", description="Sala alternativa escolhida")),
-    )
-
-
 def _validar(sala: str, inicio: str, fim: str) -> dominio.Intervalo:
     try:
         return dominio.validar(sala, inicio, fim)
@@ -150,46 +144,126 @@ def consultar_disponibilidade(sala: str, inicio: str, fim: str) -> Disponibilida
     )
 
 
-def escolha_de_sala(sala: str, inicio: str, fim: str) -> SalaLivre | Elicit[BaseModel]:
-    """Resolver do MRTR: decide se a reserva precisa perguntar algo ao cliente.
+# --- MRTR da reserva ------------------------------------------------------------
+#
+# O servidor nao chama o cliente: ele termina a resposta com input_required, e o
+# cliente volta com um request novo. Tudo o que a segunda rodada precisa (o pedido
+# e as alternativas oferecidas) viaja no requestState, que o RequestStateBoundary
+# do SDK sela na saida e verifica na volta. Nada fica guardado neste processo.
 
-    Roda de novo a cada rodada. Na primeira, um conflito vira `Elicit`, e o SDK
-    responde input_required. No retry, a mesma pergunta e refeita e o SDK casa a
-    resposta que veio em inputResponses, ja validada contra o enum.
+
+def _schema_da_escolha(alternativas: list[str]) -> dict:
+    """Schema plano: `sala` restrita as alternativas, na ordem da regra fechada."""
+    return {
+        "type": "object",
+        "properties": {
+            "sala": {
+                "type": "string",
+                "title": "Sala",
+                "description": "Sala alternativa escolhida",
+                "enum": alternativas,
+            }
+        },
+        "required": ["sala"],
+    }
+
+
+def _declarou_elicitation_form(ctx: Context) -> bool:
+    """Le a capability do _meta deste request, nunca de um anterior.
+
+    `elicitation: {}` sem modos conta como form (a forma de antes dos modos);
+    so url, sem form, nao conta.
     """
-    intervalo = _validar(sala, inicio, fim)
-    if not dominio.conflitos(sala, intervalo):
-        return SalaLivre(sala=sala)
-    alternativas = dominio.alternativas(sala, intervalo)
-    if not alternativas:
-        raise ToolError(dominio.ERRO_SEM_ALTERNATIVA)
-    return Elicit(MENSAGEM_ELICITACAO, _modelo_de_escolha(alternativas))
+    capacidades = ctx.client_capabilities
+    elicitation = capacidades.elicitation if capacidades is not None else None
+    return elicitation is not None and (elicitation.form is not None or elicitation.url is None)
 
 
-@mcp.tool(description="Reserva uma sala. Se o intervalo estiver ocupado, pergunta qual alternativa usar.")
-def reservar_sala(
-    sala: str,
-    inicio: str,
-    fim: str,
-    responsavel: str,
-    escolha: Annotated[ElicitationResult[BaseModel], Resolve(escolha_de_sala)],
-) -> ReservaOut:
-    if not isinstance(escolha, AcceptedElicitation):
-        return ReservaOut(reservado=False, motivo="recusado")
-    sala_final = escolha.data.sala
-    intervalo = _validar(sala_final, inicio, fim)
-    if dominio.conflitos(sala_final, intervalo):
-        raise ToolError(dominio.ERRO_SEM_ALTERNATIVA)
-    reserva = dominio.criar_reserva(sala_final, inicio, fim, responsavel)
+def _perguntar(ctx: Context, pedido: dict[str, str], alternativas: list[str]) -> InputRequiredResult:
+    if not _declarou_elicitation_form(ctx):
+        raise MCPError(
+            code=MISSING_REQUIRED_CLIENT_CAPABILITY,
+            message="Client did not declare the form elicitation capability required by reservar_sala",
+            data={"requiredCapabilities": {"elicitation": {"form": {}}}},
+        )
+    pergunta = ElicitRequest(
+        params=ElicitRequestFormParams(message=MENSAGEM_ELICITACAO,
+                                       requested_schema=_schema_da_escolha(alternativas))
+    )
+    estado = {"v": VERSAO_DO_ESTADO, "pedido": pedido, "alternativas": alternativas}
+    # Em texto aqui; o boundary do SDK cifra e assina antes de sair (AES-256-GCM).
+    return InputRequiredResult(input_requests={CHAVE_DA_ESCOLHA: pergunta},
+                               request_state=json.dumps(estado, separators=(",", ":")))
+
+
+def _estado_selado(ctx: Context) -> tuple[dict[str, str], list[str]] | None:
+    """O requestState ja verificado pelo boundary (None na primeira rodada)."""
+    bruto = ctx.request_state
+    if bruto is None:
+        return None
+    try:
+        estado = json.loads(bruto)
+        assert estado["v"] == VERSAO_DO_ESTADO
+        pedido, alternativas = estado["pedido"], estado["alternativas"]
+        assert isinstance(pedido, dict) and isinstance(alternativas, list)
+    except (ValueError, KeyError, TypeError, AssertionError):
+        raise MCPError(code=INVALID_PARAMS, message="Invalid requestState") from None
+    return pedido, alternativas
+
+
+def _reservar(sala: str, pedido: dict[str, str]) -> ReservaOut:
+    reserva = dominio.criar_reserva(sala, pedido["inicio"], pedido["fim"], pedido["responsavel"])
     return ReservaOut(
         reserva=reserva["id"],
         reservado=True,
-        sala=sala_final,
-        inicio=inicio,
-        fim=fim,
-        responsavel=responsavel,
+        sala=sala,
+        inicio=pedido["inicio"],
+        fim=pedido["fim"],
+        responsavel=pedido["responsavel"],
         politica=dominio.POLITICA_VERSAO,
     )
+
+
+def _resolver_conflito(ctx: Context, pedido: dict[str, str], intervalo: dominio.Intervalo) -> InputRequiredResult:
+    alternativas = dominio.alternativas(pedido["sala"], intervalo)
+    if not alternativas:
+        raise ToolError(dominio.ERRO_SEM_ALTERNATIVA)
+    return _perguntar(ctx, pedido, alternativas)
+
+
+@mcp.tool(description="Reserva uma sala. Se o intervalo estiver ocupado, pergunta qual alternativa usar.")
+def reservar_sala(sala: str, inicio: str, fim: str, responsavel: str, ctx: Context) -> ReservaOut | InputRequiredResult:
+    selado = _estado_selado(ctx)
+
+    if selado is None:
+        # Primeira rodada: valida, reserva se estiver livre, pergunta se houver conflito.
+        pedido = {"sala": sala, "inicio": inicio, "fim": fim, "responsavel": responsavel}
+        intervalo = _validar(sala, inicio, fim)
+        if not dominio.conflitos(sala, intervalo):
+            return _reservar(sala, pedido)
+        return _resolver_conflito(ctx, pedido, intervalo)
+
+    # Retry: o pedido sai do estado selado, nao dos argumentos reenviados. (O boundary
+    # ja recusa com -32602 argumentos que divergem do que foi selado.)
+    pedido, oferecidas = selado
+    resposta = (ctx.input_responses or {}).get(CHAVE_DA_ESCOLHA)
+    if resposta is None:
+        return _resolver_conflito(ctx, pedido, _validar(pedido["sala"], pedido["inicio"], pedido["fim"]))
+    if not isinstance(resposta, ElicitResult):
+        raise ToolError("Resposta invalida: era esperada a resposta de uma elicitation")
+    if resposta.action == "decline":
+        return ReservaOut(reservado=False, motivo="recusado")
+    if resposta.action == "cancel":
+        return ReservaOut(reservado=False, motivo="cancelado")
+
+    escolhida = (resposta.content or {}).get("sala")
+    if escolhida not in oferecidas:
+        raise ToolError(f"Escolha fora das alternativas oferecidas: {escolhida}")
+    intervalo = _validar(escolhida, pedido["inicio"], pedido["fim"])
+    if not dominio.conflitos(escolhida, intervalo):
+        return _reservar(escolhida, pedido)
+    # A sala escolhida foi ocupada entre as rodadas: pergunta de novo com as alternativas de agora.
+    return _resolver_conflito(ctx, pedido, intervalo)
 
 
 # --- resource -----------------------------------------------------------------

@@ -107,6 +107,35 @@ def test_retry_conclui_depois_de_reiniciar_o_servidor(servidor_mcp, mcp):
     assert resultado["structuredContent"]["politica"] == "2026-11-01"
 
 
+def test_retry_apos_restart_conclui_mesmo_que_as_alternativas_tenham_mudado(servidor_mcp, mcp):
+    """O cenario do fluxo do avaliador (passos 8, 11 e 12).
+
+    Com o mirante ocupado, o estado selado oferece so a fusca. O restart zera as
+    reservas e o mirante volta a ficar livre, entao a pergunta, se recalculada, seria
+    outra. O retry tem que concluir pelo que foi selado, e nao perguntar de novo.
+    """
+    mcp.reservar("sala-mirante", h("14:00"), h("15:00"))
+    chave, enum, estado = _pausar(mcp)
+    assert enum == ["sala-fusca"]
+    servidor_mcp.reiniciar()
+    _, resposta = mcp.retomar(CONFLITO, chave, {"action": "accept", "content": {"sala": "sala-fusca"}}, estado)
+    resultado = resposta["result"]
+    assert resultado["resultType"] == "complete" and not resultado.get("isError")
+    assert resultado["structuredContent"]["sala"] == "sala-fusca"
+
+
+def test_sala_escolhida_ocupada_entre_as_rodadas_pergunta_de_novo(mcp):
+    chave, enum, estado = _pausar(mcp)
+    assert enum == ["sala-fusca", "sala-mirante"]
+    mcp.reservar("sala-fusca", h("14:00"), h("15:00"), "Outra pessoa")
+    _, resposta = mcp.retomar(CONFLITO, chave, {"action": "accept", "content": {"sala": "sala-fusca"}}, estado)
+    resultado = resposta["result"]
+    assert resultado["resultType"] == "input_required"
+    novo = next(iter(resultado["inputRequests"].values()))
+    assert novo["params"]["requestedSchema"]["properties"]["sala"]["enum"] == ["sala-mirante"]
+    assert resultado["requestState"] != estado
+
+
 @pytest.mark.parametrize("sala", ["sala-delorean", "sala-aquario", "sala-garagem"])
 def test_resposta_fora_do_enum_nao_reserva(mcp, sala):
     chave, enum, estado = _pausar(mcp)

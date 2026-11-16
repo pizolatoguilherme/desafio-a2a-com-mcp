@@ -7,7 +7,7 @@ Dois processos Python, sem LLM:
 | `servidor-mcp/servidor.py` | 7301 | `POST /mcp` (Streamable HTTP, stateless) | servidor MCP: 3 tools, o resource `politica://uso` e o ciclo de MRTR em `reservar_sala` |
 | `agente/agente.py` | 7300 | `GET /.well-known/agent-card.json`, `POST /a2a` (JSON-RPC 2.0) | servidor A2A v1.0 por fora, host MCP por dentro |
 
-Stack: Python 3.10+, SDK oficial `mcp==2.3.0` (revisão 2026-07-28) nos dois lados, Starlette e uvicorn. As versões ficam travadas em [servidor-mcp/pyproject.toml](servidor-mcp/pyproject.toml), [agente/pyproject.toml](agente/pyproject.toml) e [testes/pyproject.toml](testes/pyproject.toml). Nenhum SDK de provedor de LLM.
+Stack: Python 3.10+ (validado em 3.10 e 3.14), SDK oficial `mcp==2.3.0` (revisão 2026-07-28) nos dois lados, Starlette e uvicorn. As versões ficam travadas em [servidor-mcp/pyproject.toml](servidor-mcp/pyproject.toml), [agente/pyproject.toml](agente/pyproject.toml) e [testes/pyproject.toml](testes/pyproject.toml). Nenhum SDK de provedor de LLM.
 
 ## Como rodar
 
@@ -69,10 +69,10 @@ O servidor MCP imprime, na subida, a versão da política e a validade do `reque
 ```
 mcp central-de-salas em http://127.0.0.1:7301/mcp (politica 2026-11-01, requestState valido por 600s)
 ...
-mcp method=tools/list id=4 alvo=- retry=nao http=200 traceparent=00-99ad0d57086b6beb6803e4406666134d-... capabilities={"elicitation":{"form":{},"url":{}}}
-mcp method=resources/read id=5 alvo=politica://uso retry=nao http=200 traceparent=00-99ad0d57086b6beb6803e4406666134d-...
-mcp method=tools/call id=6 alvo=reservar_sala retry=nao http=200 traceparent=00-99ad0d57086b6beb6803e4406666134d-b39e7e51ddf5937b-01 ...
-mcp method=tools/call id=7 alvo=reservar_sala retry=sim http=200 traceparent=00-99ad0d57086b6beb6803e4406666134d-fc95f6ace795e2ed-01 ...
+mcp method=tools/list id=4 alvo=- retry=nao http=200 traceparent=00-10076955bf98a0d0e3325b18e388754a-7f1290f1e28ca38d-01 capabilities={"elicitation":{"form":{},"url":{}}}
+mcp method=resources/read id=5 alvo=politica://uso retry=nao http=200 traceparent=00-10076955bf98a0d0e3325b18e388754a-b22700078c563166-01 ...
+mcp method=tools/call id=6 alvo=reservar_sala retry=nao http=200 traceparent=00-10076955bf98a0d0e3325b18e388754a-9638dd0b1e9dca73-01 ...
+mcp method=tools/call id=7 alvo=reservar_sala retry=sim http=200 traceparent=00-10076955bf98a0d0e3325b18e388754a-c4d0dbde74ec3ff0-01 ...
 ```
 
 - `tools/list` vem antes do primeiro `tools/call` de cada Task. O agente descobre a tool em runtime, sem lista fixa.
@@ -145,10 +145,10 @@ Ficam em [testes/](testes/): 79 testes, todos sobre processos reais e HTTP de ve
 
 ## Saída do validador
 
-Última execução, com os dois processos recém-iniciados:
+Última execução, com os dois processos recém-iniciados a partir de um clone limpo, em Python 3.10 (o validador rodando no mesmo 3.10):
 
 ```
-trace-id desta execucao: 99ad0d57086b6beb6803e4406666134d
+trace-id desta execucao: 10076955bf98a0d0e3325b18e388754a
 procure esse valor no stderr do servidor MCP para conferir a propagacao do traceparent.
 
 PASS 01 tools/list traz as tres tools

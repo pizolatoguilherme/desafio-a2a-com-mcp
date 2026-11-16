@@ -9,11 +9,6 @@ from pathlib import Path
 
 import pytest
 
-try:
-    import tomllib
-except ImportError:  # Python 3.10
-    tomllib = None
-
 from conftest import RAIZ, Processo, porta_livre
 
 SDKS_DE_LLM = ("anthropic", "openai", "google-genai", "google-generativeai", "langchain", "mistralai",
@@ -72,10 +67,10 @@ def test_nenhum_segredo_literal_versionado():
 
 @pytest.mark.parametrize("projeto", ["servidor-mcp", "agente", "testes"])
 def test_versoes_travadas_e_sem_sdk_de_llm(projeto):
-    if tomllib is None:
-        pytest.skip("tomllib exige Python 3.11+")
-    dados =tomllib.loads((RAIZ / projeto / "pyproject.toml").read_text(encoding="utf-8"))
-    dependencias = dados["project"]["dependencies"]
+    # Leitura simples da lista `dependencies` (tomllib so existe a partir do 3.11).
+    texto = (RAIZ / projeto / "pyproject.toml").read_text(encoding="utf-8")
+    bloco = re.search(r"^dependencies = \[(.*?)^\]", texto, re.S | re.M).group(1)
+    dependencias = re.findall(r'"([^"]+)"', bloco)
     assert dependencias and all("==" in d for d in dependencias), dependencias
     assert not any(d.lower().startswith(SDKS_DE_LLM) for d in dependencias)
 

@@ -4,9 +4,9 @@ version = "1.0.0"
 description = "Agente A2A (JSON-RPC) que e host MCP por dentro. Sem LLM."
 requires-python = ">=3.10"
 dependencies = [
-    "httpx2==2.16.2",
+    "httpx2==2.14.0",
     "mcp==2.3.0",
-    "starlette==1.10.0",
+    "starlette==1.7.0",
     "uvicorn==0.54.0",
 ]
 

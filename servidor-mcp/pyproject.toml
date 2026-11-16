@@ -1,0 +1,19 @@
+[project]
+name = "central-de-salas-servidor-mcp"
+version = "1.0.0"
+description = "Servidor MCP (Streamable HTTP) das salas da Hill Valley Tech"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp==2.3.0",
+    "pydantic==2.14.3",
+    "starlette==1.10.0",
+    "uvicorn==0.54.0",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+# So as dependencias sao instaladas; o codigo roda direto da pasta.
+[tool.setuptools]
+py-modules = []

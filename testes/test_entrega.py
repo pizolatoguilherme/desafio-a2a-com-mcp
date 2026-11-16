@@ -79,3 +79,64 @@ def test_versoes_travadas_e_sem_sdk_de_llm(projeto):
                                    "## Saída do validador"])
 def test_readme_tem_as_quatro_secoes(secao):
     assert secao in Path(RAIZ / "README.md").read_text(encoding="utf-8")
+
+
+# --- restricoes nao negociaveis e estrutura (checagem estatica) ---------------------
+
+import ast  # noqa: E402
+
+AGENTE = sorted((RAIZ / "agente").glob("*.py"))
+MODULOS_DO_SERVIDOR = {p.stem for p in (RAIZ / "servidor-mcp").glob("*.py")}
+
+
+def _importados(caminho: Path) -> set[str]:
+    arvore = ast.parse(caminho.read_text(encoding="utf-8"))
+    nomes: set[str] = set()
+    for no in ast.walk(arvore):
+        if isinstance(no, ast.Import):
+            nomes |= {a.name.split(".")[0] for a in no.names}
+        elif isinstance(no, ast.ImportFrom) and no.module:
+            nomes.add(no.module.split(".")[0])
+    return nomes
+
+
+def test_agente_nao_importa_codigo_do_servidor_nem_sdk_de_llm():
+    """Dois processos separados: o agente so fala com o servidor por HTTP."""
+    for arquivo in AGENTE:
+        importados = _importados(arquivo)
+        assert not importados & MODULOS_DO_SERVIDOR, (arquivo.name, importados & MODULOS_DO_SERVIDOR)
+        assert not any(i.startswith(tuple(s.replace("-", "_") for s in SDKS_DE_LLM)) for i in importados), arquivo.name
+
+
+def test_request_state_e_opaco_para_o_agente():
+    """Guardar e ecoar, nunca abrir: nada de base64, decodificacao ou json sobre o token."""
+    for arquivo in AGENTE:
+        texto = arquivo.read_text(encoding="utf-8")
+        assert "base64" not in texto and "b64decode" not in texto, arquivo.name
+        for linha in texto.splitlines():
+            if "request_state" in linha or "requestState" in linha:
+                assert not re.search(r"loads|decode|split|\[\s*\d|unseal", linha), (arquivo.name, linha)
+
+
+def test_agente_nao_tem_regra_de_sala():
+    """Conflito, politica e alternativas sao do servidor MCP."""
+    proibidos = re.compile(r"capacidade|salas\.json|reservas\.json|08:00|20:00|timedelta|fromisoformat|sobrepoe")
+    for arquivo in AGENTE:
+        codigo = "\n".join(l for l in arquivo.read_text(encoding="utf-8").splitlines() if not l.strip().startswith("#"))
+        assert not proibidos.search(codigo), arquivo.name
+
+
+@pytest.mark.parametrize("caminho", ["README.md", "dados/salas.json", "dados/reservas.json", "dados/politica-de-uso.md",
+                                     "validador/validar.py", "exemplos/wire"])
+def test_estrutura_obrigatoria(caminho):
+    assert (RAIZ / caminho).exists()
+
+
+@pytest.mark.parametrize("pasta", ["servidor-mcp", "agente"])
+def test_pastas_da_entrega_preenchidas(pasta):
+    assert list((RAIZ / pasta).glob("*.py")), pasta
+
+
+def test_readme_documenta_como_gerar_e_exportar_o_segredo():
+    readme = (RAIZ / "README.md").read_text(encoding="utf-8")
+    assert 'export REQUEST_STATE_SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")' in readme

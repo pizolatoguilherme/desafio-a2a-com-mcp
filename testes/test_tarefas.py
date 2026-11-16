@@ -68,3 +68,27 @@ def test_pedido_em_formato_fixo(texto, esperado):
 @pytest.mark.parametrize("texto", ["reserve a garagem amanha", "reservar sala=sala-porao", "escolha=sala-fusca"])
 def test_texto_fora_do_formato_nao_e_pedido(texto):
     assert ponte.PEDIDO.match(texto) is None
+
+
+def test_tool_ausente_na_descoberta_falha_a_task():
+    """O agente descobre em runtime: sem reservar_sala no tools/list, nao chama nada."""
+    import asyncio
+
+    class HostSemATool:
+        chamadas: list[str] = []
+
+        async def descobrir_tools(self, trace_id):
+            return {"listar_salas"}
+
+        async def versao_da_politica(self, trace_id):
+            self.chamadas.append("resources/read")
+            return "2026-11-01"
+
+        async def chamar_tool(self, *args, **kwargs):
+            self.chamadas.append("tools/call")
+
+    host = HostSemATool()
+    texto = "reservar sala=sala-porao inicio=a fim=b responsavel=Doc"
+    task = asyncio.run(ponte.Ponte(host, t.Tarefas()).iniciar({"parts": [{"text": texto}]}, texto, "0" * 32))
+    assert task.estado == t.FAILED and "reservar_sala" in task.mensagem_status["parts"][0]["text"]
+    assert host.chamadas == []

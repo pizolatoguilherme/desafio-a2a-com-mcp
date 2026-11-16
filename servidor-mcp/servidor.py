@@ -33,6 +33,7 @@ from mcp.server.request_state import RequestStateSecurity
 from mcp.shared.exceptions import MCPError
 
 import dominio
+from apenas_2026 import ApenasEra2026
 from log_requests import RegistroDeRequests
 
 NOME = "central-de-salas"
@@ -77,6 +78,9 @@ mcp = MCPServer(
     NOME,
     version="1.0.0",
     request_state_security=RequestStateSecurity(keys=[_segredo()], ttl=VALIDADE_DO_ESTADO_SEGUNDOS),
+    # subscriptions/listen esta fora do escopo do desafio: sem isso, o SDK anunciaria
+    # resources.subscribe e listChanged que este servidor nunca entrega.
+    subscriptions=False,
 )
 
 
@@ -285,7 +289,8 @@ def main() -> None:
         file=sys.stderr,
         flush=True,
     )
-    uvicorn.run(RegistroDeRequests(app), host=host, port=porta, log_level="warning")
+    # O registro fica por fora, para logar tambem o que a borda recusa.
+    uvicorn.run(RegistroDeRequests(ApenasEra2026(app)), host=host, port=porta, log_level="warning")
 
 
 if __name__ == "__main__":

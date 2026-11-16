@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import urllib.request
 
 from conftest import estado_de, h, task_de, texto_de
 
@@ -142,10 +143,58 @@ def test_get_task_reflete_o_estado_corrente(a2a):
 
 
 def test_card_v1_aponta_para_o_endpoint_do_agente(agente):
-    import urllib.request
-
     with urllib.request.urlopen(f"{agente.base}/.well-known/agent-card.json") as r:
         card = json.loads(r.read())
     interface = card["supportedInterfaces"][0]
     assert interface == {"url": f"{agente.base}/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}
     assert [s["id"] for s in card["skills"]] == ["reservar-sala"]
+
+
+def test_um_unico_pedido_em_conflito_percorre_a_sequencia_inteira(a2a, agente, proxy):
+    """A frase final do fluxo do avaliador: abertura da Task, chamada MCP, input_required,
+    pausa, retomada com id novo e reserva criada."""
+    pausa = a2a.enviar(PEDIDO_CONFLITO)
+    task_id = task_de(pausa)["id"]
+    fim = a2a.enviar("escolha=sala-fusca", task_id=task_id)
+    assert estado_de(fim) == "TASK_STATE_COMPLETED"
+
+    transicoes = [l.split("estado=", 1)[1] for l in agente.stderr.splitlines() if f"task={task_id} estado=" in l]
+    assert transicoes == [
+        "TASK_STATE_SUBMITTED",
+        "TASK_STATE_SUBMITTED -> TASK_STATE_WORKING",
+        "TASK_STATE_WORKING -> TASK_STATE_INPUT_REQUIRED",
+        "TASK_STATE_INPUT_REQUIRED -> TASK_STATE_WORKING",
+        "TASK_STATE_WORKING -> TASK_STATE_COMPLETED",
+    ]
+    chamadas = [t for t in proxy.jsonrpc() if t["corpo"]["method"] == "tools/call"]
+    assert chamadas[0]["resposta"]["result"]["resultType"] == "input_required"
+    assert chamadas[1]["resposta"]["result"]["resultType"] == "complete"
+    assert chamadas[0]["corpo"]["id"] != chamadas[1]["corpo"]["id"]
+
+
+def test_metodo_desconhecido_e_corpo_invalido_sao_recusados(a2a, agente):
+    assert a2a.rpc("CancelTask", {"id": "x"})["error"]["code"] == -32601
+    req = urllib.request.Request(f"{agente.base}/a2a", data=b"nao-e-json",
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req) as r:
+        assert json.loads(r.read())["error"]["code"] == -32700
+
+
+def test_escolha_fora_do_enum_com_alternativa_unica_e_texto_fora_do_formato(a2a):
+    # A garagem das 16h esta livre e e reservada direto; a fusca das 16h (res-0002)
+    # passa a ter uma unica alternativa: o mirante.
+    livre = a2a.enviar(f"reservar sala=sala-garagem inicio={h('16:00')} fim={h('17:00')} responsavel=Lorraine")
+    assert estado_de(livre) == "TASK_STATE_COMPLETED"
+    unica = a2a.enviar(f"reservar sala=sala-fusca inicio={h('16:00')} fim={h('17:00')} responsavel=Biff")
+    assert texto_de(unica) == "alternativas: sala-mirante"
+    for texto in ("escolha=sala-garagem", "quero a garagem", "escolha="):
+        de_novo = a2a.enviar(texto, task_id=task_de(unica)["id"])
+        assert estado_de(de_novo) == "TASK_STATE_INPUT_REQUIRED"
+        assert texto_de(de_novo) == "alternativas: sala-mirante"
+
+
+def test_servidor_mcp_fora_do_ar_na_primeira_chamada_falha_a_task(a2a, servidor_mcp):
+    servidor_mcp.parar()
+    resposta = a2a.enviar(PEDIDO_LIVRE)
+    assert estado_de(resposta) == "TASK_STATE_FAILED"
+    assert "servidor MCP" in texto_de(resposta)

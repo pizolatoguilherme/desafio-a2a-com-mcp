@@ -44,6 +44,8 @@ Para testar o retry depois de reiniciar o servidor, reinicie no **mesmo** termin
 python3 validador/validar.py --agente http://localhost:7300 --mcp http://localhost:7301
 ```
 
+> **Antes do roteiro manual** (o `SendMessage` com o corpo de `exemplos/wire/08-a2a-send-message.json` e os passos seguintes), reinicie os dois processos. As reservas ficam em memória, e o validador deixa a fusca e o mirante ocupados das 14h às 15h. Sem o restart, o pedido da garagem nesse horário não tem alternativas, e a Task termina em `TASK_STATE_FAILED` com `Sem alternativas disponiveis no intervalo` em vez de pausar com `alternativas: sala-fusca, sala-mirante`. O retry de um `requestState` não depende disso: ele vale entre restarts do servidor MCP, desde que a `REQUEST_STATE_SECRET` seja a mesma.
+
 **Testes da entrega** (opcional): são 79 testes próprios, além das 36 verificações do validador. Eles sobem os dois processos em portas livres, então não conflitam com o que estiver rodando nas portas 7300 e 7301:
 
 ```bash

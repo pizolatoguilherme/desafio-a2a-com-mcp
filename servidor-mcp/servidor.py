@@ -29,7 +29,9 @@ import dominio
 from log_requests import RegistroDeRequests
 
 NOME = "central-de-salas"
-VALIDADE_DO_ESTADO_SEGUNDOS = 600  # 10 minutos, dentro da faixa de 5 a 30 do enunciado
+VALIDADE_PADRAO_SEGUNDOS = 600  # 10 minutos
+VALIDADE_MINIMA_SEGUNDOS = 300  # o enunciado exige expiracao entre 5 e 30 minutos
+VALIDADE_MAXIMA_SEGUNDOS = 1800
 MENSAGEM_ELICITACAO = "A sala pedida esta ocupada nesse intervalo. Escolha uma alternativa."
 
 
@@ -42,6 +44,25 @@ def _segredo() -> str:
         )
     return segredo
 
+
+def _validade() -> int:
+    """REQUEST_STATE_TTL em segundos, opcional, sempre dentro da faixa de 5 a 30 minutos."""
+    bruto = os.environ.get("REQUEST_STATE_TTL", "").strip()
+    if not bruto:
+        return VALIDADE_PADRAO_SEGUNDOS
+    try:
+        ttl = int(bruto)
+    except ValueError:
+        sys.exit(f"REQUEST_STATE_TTL invalido: {bruto!r} nao e um numero inteiro de segundos")
+    if not VALIDADE_MINIMA_SEGUNDOS <= ttl <= VALIDADE_MAXIMA_SEGUNDOS:
+        sys.exit(
+            f"REQUEST_STATE_TTL fora da faixa: {ttl}s. Use entre "
+            f"{VALIDADE_MINIMA_SEGUNDOS} e {VALIDADE_MAXIMA_SEGUNDOS} segundos (5 a 30 minutos)"
+        )
+    return ttl
+
+
+VALIDADE_DO_ESTADO_SEGUNDOS = _validade()
 
 mcp = MCPServer(
     NOME,
@@ -182,9 +203,15 @@ def politica_de_uso() -> str:
 
 def main() -> None:
     porta = int(os.environ.get("MCP_PORT", "7301"))
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
     app = mcp.streamable_http_app(stateless_http=True, json_response=True)
-    uvicorn.run(RegistroDeRequests(app), host=os.environ.get("MCP_HOST", "127.0.0.1"), port=porta,
-                log_level="warning")
+    print(
+        f"mcp {NOME} em http://{host}:{porta}/mcp (politica {dominio.POLITICA_VERSAO}, "
+        f"requestState valido por {VALIDADE_DO_ESTADO_SEGUNDOS}s)",
+        file=sys.stderr,
+        flush=True,
+    )
+    uvicorn.run(RegistroDeRequests(app), host=host, port=porta, log_level="warning")
 
 
 if __name__ == "__main__":

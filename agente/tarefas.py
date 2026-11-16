@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -53,17 +54,22 @@ class Task:
         """Muda o estado. Estado terminal e definitivo."""
         if estado not in TRANSICOES.get(self.estado, set()):
             raise TransicaoInvalidaError(f"{self.estado} -> {estado}")
+        print(f"a2a task={self.id} estado={self.estado} -> {estado}", file=sys.stderr, flush=True)
         self.estado = estado
         if texto is not None:
-            mensagem = {
-                "messageId": novo_id("msg"),
-                "role": "ROLE_AGENT",
-                "parts": [{"text": texto}],
-                "taskId": self.id,
-                "contextId": self.context_id,
-            }
-            self.mensagem_status = mensagem
-            self.historico.append(mensagem)
+            self.mensagem_status = self.anotar(texto)
+
+    def anotar(self, texto: str) -> dict[str, Any]:
+        """Acrescenta uma mensagem do agente ao historico, sem mudar o estado."""
+        mensagem = {
+            "messageId": novo_id("msg"),
+            "role": "ROLE_AGENT",
+            "parts": [{"text": texto}],
+            "taskId": self.id,
+            "contextId": self.context_id,
+        }
+        self.historico.append(mensagem)
+        return mensagem
 
     def anexar_artifact(self, nome: str, texto: str) -> None:
         self.artifacts.append({"artifactId": novo_id("art"), "name": nome, "parts": [{"text": texto}]})
@@ -110,6 +116,7 @@ class Tarefas:
     def criar(self, context_id: str | None = None) -> Task:
         task = Task(id=novo_id("task"), context_id=context_id or novo_id("ctx"))
         self._tasks[task.id] = task
+        print(f"a2a task={task.id} estado={task.estado}", file=sys.stderr, flush=True)
         return task
 
     def obter(self, task_id: str) -> Task | None:

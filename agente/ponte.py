@@ -113,7 +113,6 @@ class Ponte:
                 resposta = {"action": "accept", "content": {pendencia.campo: escolha}}
 
             task.mudar(WORKING)
-            self.tarefas.retirar_pendencia(task.id)
             try:
                 # O retry: mesmo tools/call, id JSON-RPC novo (gerado pelo SDK),
                 # a mesma chave do inputRequests e o requestState ecoado sem tocar.
@@ -125,9 +124,14 @@ class Ponte:
                     request_state=pendencia.request_state,
                 )
             except Exception as e:
-                print(f"agente: falha no retry MCP: {e!r}", file=sys.stderr, flush=True)
-                task.mudar(FAILED, f"Falha ao falar com o servidor MCP: {e}")
+                # Falha de transporte: o servidor nao chegou a decidir nada e o
+                # requestState continua valido. A Task volta a esperar a escolha,
+                # com a mesma pendencia, e o cliente pode responder de novo.
+                print(f"agente: task={task.id} falha no retry MCP: {e!r}", file=sys.stderr, flush=True)
+                task.anotar(f"Falha ao falar com o servidor MCP ({type(e).__name__}). Responda de novo.")
+                task.mudar(INPUT_REQUIRED, linha_de_alternativas(pendencia.opcoes))
                 return task
+            self.tarefas.retirar_pendencia(task.id)
             self._aplicar(task, pedido, resultado)
         return task
 
